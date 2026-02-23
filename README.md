@@ -9,7 +9,7 @@ A bunch of tools for handling the MDX music format (music for the Sharp X68000 u
 
 These tools are aimed at the large collections of MDX files available online (see below for download links). They are meant to convert to other formats, such as vgm, midi and for the curious, MML and dumping the raw MDX data.
 
-* `mdxplay` (WIP) - play a mdx file, currently linux only (libao)
+* `mdxplay` (WIP) - play an MDX file. CLI version is currently Linux only (libao); a browser/web port is available at `web/mdxplay.html`.
 * `mdx2pcm` (WIP) - render a mdx file to a wav file
 * `mdx2vgm` (WIP) - convert to VGM format
 * `mdxinfo` - extract information from a MDX file, and output in `.csv` format
