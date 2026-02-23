@@ -6,6 +6,176 @@ import { FmOpmEmuDriver } from "./fm_opm_emu_driver.js";
 import { MdxDriver } from "./mdx_driver.js";
 import { findPdxInFileIndex, normalizeLookupName } from "./tools.js";
 
+function clampAudioSample(v) {
+  if (v > 1) return 1;
+  if (v < -1) return -1;
+  return v;
+}
+
+function toValidMaxSamples(maxSeconds, sampleRate) {
+  const seconds = Number.isFinite(maxSeconds) && maxSeconds > 0 ? maxSeconds : 600;
+  return Math.max(1, Math.floor(seconds * sampleRate));
+}
+
+export class BrowserMdxStreamSession {
+  constructor(sampleRate, blockSize, mdxFile, pdxFile, options = {}) {
+    this.sampleRate = sampleRate;
+    this.blockSize = blockSize;
+    this.maxSamples = toValidMaxSamples(options.maxSeconds, sampleRate);
+
+    this.timerDriver = new PcmTimerDriver(sampleRate);
+    this.adpcmDriver = new AdpcmPcmMixDriver(sampleRate);
+    this.fmDriver = new FmOpmEmuDriver(null, sampleRate);
+    this.mdxDriver = new MdxDriver(
+      this.timerDriver.timerDriver,
+      this.fmDriver.fmDriver,
+      this.adpcmDriver.adpcmDriver
+    );
+    this.mdxDriver.load(mdxFile, pdxFile);
+
+    if (typeof options.maxLoops === "number") {
+      this.mdxDriver.maxLoops = Math.max(0, options.maxLoops | 0);
+    }
+
+    this.totalSamples = 0;
+    this.finished = false;
+    this.truncated = false;
+
+    this.tempCapacity = 0;
+    this.fmL = null;
+    this.fmR = null;
+    this.adpcmL = null;
+    this.adpcmR = null;
+  }
+
+  _ensureTempBuffers(size) {
+    if (this.tempCapacity >= size) return;
+    this.tempCapacity = size;
+    this.fmL = new Int32Array(size);
+    this.fmR = new Int32Array(size);
+    this.adpcmL = new Int32Array(size);
+    this.adpcmR = new Int32Array(size);
+  }
+
+  _refreshFinishedState() {
+    if (this.finished) return;
+    if (!this.mdxDriver) {
+      this.finished = true;
+      return;
+    }
+    if (this.mdxDriver.ended) {
+      this.finished = true;
+      return;
+    }
+    if (this.totalSamples >= this.maxSamples) {
+      this.truncated = !this.mdxDriver.ended;
+      this.finished = true;
+    }
+  }
+
+  progress(producedSamples = 0) {
+    return {
+      producedSamples,
+      totalSamples: this.totalSamples,
+      seconds: this.totalSamples / this.sampleRate,
+      finished: this.finished,
+      ended: !!this.mdxDriver.ended,
+      truncated: this.truncated,
+    };
+  }
+
+  renderFloatBlock(outL, outR) {
+    const blockSamples = Math.min(outL?.length || 0, outR?.length || 0);
+    if (!this.mdxDriver || !this.timerDriver || !this.fmDriver || !this.adpcmDriver) {
+      if (blockSamples > 0) {
+        outL.fill(0);
+        outR.fill(0);
+      }
+      this._refreshFinishedState();
+      return this.progress(0);
+    }
+
+    if (blockSamples <= 0) {
+      this._refreshFinishedState();
+      return this.progress(0);
+    }
+
+    this._ensureTempBuffers(blockSamples);
+    outL.fill(0);
+    outR.fill(0);
+
+    let produced = 0;
+    while (produced < blockSamples) {
+      this._refreshFinishedState();
+      if (this.finished) break;
+
+      let samples = blockSamples - produced;
+      const sampleBudget = this.maxSamples - this.totalSamples;
+      if (sampleBudget < samples) samples = sampleBudget;
+      if (samples <= 0) break;
+
+      const timerSamples = this.timerDriver.estimate(samples);
+      if (timerSamples < samples) samples = timerSamples;
+
+      const fmSamples = this.fmDriver.estimate(samples);
+      if (fmSamples < samples) samples = fmSamples;
+
+      const adpcmSamples = this.adpcmDriver.estimate(samples);
+      if (adpcmSamples < samples) samples = adpcmSamples;
+
+      if (samples <= 0) samples = 1;
+
+      this.fmL.fill(0, 0, samples);
+      this.fmR.fill(0, 0, samples);
+      this.adpcmL.fill(0, 0, samples);
+      this.adpcmR.fill(0, 0, samples);
+
+      this.adpcmDriver.run(this.adpcmL, this.adpcmR, samples);
+      this.fmDriver.run(this.fmL, this.fmR, samples);
+
+      for (let i = 0; i < samples; i += 1) {
+        outL[produced + i] = clampAudioSample((this.fmL[i] + this.adpcmL[i]) / 32768);
+        outR[produced + i] = clampAudioSample((this.fmR[i] + this.adpcmR[i]) / 32768);
+      }
+
+      this.timerDriver.advance(samples);
+      this.totalSamples += samples;
+      produced += samples;
+    }
+
+    this._refreshFinishedState();
+    return this.progress(produced);
+  }
+
+  dispose() {
+    try {
+      if (this.adpcmDriver && typeof this.adpcmDriver.deinit === "function") {
+        this.adpcmDriver.deinit();
+      }
+    } finally {
+      try {
+        if (this.fmDriver && typeof this.fmDriver.deinit === "function") {
+          this.fmDriver.deinit();
+        }
+      } finally {
+        if (this.timerDriver && typeof this.timerDriver.deinit === "function") {
+          this.timerDriver.deinit();
+        }
+      }
+    }
+
+    this.finished = true;
+    this.mdxDriver = null;
+    this.adpcmDriver = null;
+    this.fmDriver = null;
+    this.timerDriver = null;
+    this.fmL = null;
+    this.fmR = null;
+    this.adpcmL = null;
+    this.adpcmR = null;
+  }
+}
+
 export class BrowserMdxRenderer {
   constructor(sampleRate = 44100, blockSize = 2048) {
     this.sampleRate = sampleRate;
@@ -28,99 +198,52 @@ export class BrowserMdxRenderer {
     return file;
   }
 
-  async render(mdxBytes, pdxBytes = null, options = {}) {
-    const mdxFile = this.parseMdx(mdxBytes);
-    const pdxFile = pdxBytes ? this.parsePdx(pdxBytes) : null;
+  _newSession(mdxFile, pdxFile, options = {}) {
+    return new BrowserMdxStreamSession(
+      this.sampleRate,
+      this.blockSize,
+      mdxFile,
+      pdxFile,
+      options
+    );
+  }
 
-    const timerDriver = new PcmTimerDriver(this.sampleRate);
-    const adpcmDriver = new AdpcmPcmMixDriver(this.sampleRate);
-    const fmDriver = new FmOpmEmuDriver(null, this.sampleRate);
-    const mdxDriver = new MdxDriver(timerDriver.timerDriver, fmDriver.fmDriver, adpcmDriver.adpcmDriver);
-    mdxDriver.load(mdxFile, pdxFile);
-
-    if (typeof options.maxLoops === "number") {
-      mdxDriver.maxLoops = Math.max(0, options.maxLoops | 0);
-    }
-
-    const maxSeconds = options.maxSeconds || 600;
-    const maxSamples = Math.floor(maxSeconds * this.sampleRate);
-
+  async _renderSession(session, options = {}) {
     const leftChunks = [];
     const rightChunks = [];
-    let totalSamples = 0;
+    const blockL = new Float32Array(this.blockSize);
+    const blockR = new Float32Array(this.blockSize);
 
-    const bufL = new Int32Array(this.blockSize);
-    const bufR = new Int32Array(this.blockSize);
-    const mixL = new Int32Array(this.blockSize);
-    const mixR = new Int32Array(this.blockSize);
-    const fmL = new Int32Array(this.blockSize);
-    const fmR = new Int32Array(this.blockSize);
-    const adpcmL = new Int32Array(this.blockSize);
-    const adpcmR = new Int32Array(this.blockSize);
-
-    while (!mdxDriver.ended && totalSamples < maxSamples) {
-      mixL.fill(0);
-      mixR.fill(0);
-      let samplesRemaining = this.blockSize;
-      let mixPos = 0;
-
-      while (samplesRemaining > 0) {
-        let samples = samplesRemaining;
-
-        const timerSamples = timerDriver.estimate(samplesRemaining);
-        if (timerSamples < samples) samples = timerSamples;
-
-        const fmSamples = fmDriver.estimate(samplesRemaining);
-        if (fmSamples < samples) samples = fmSamples;
-
-        const adpcmSamples = adpcmDriver.estimate(samplesRemaining);
-        if (adpcmSamples < samples) samples = adpcmSamples;
-
-        if (samples <= 0) samples = 1;
-
-        fmL.fill(0, 0, samples);
-        fmR.fill(0, 0, samples);
-        adpcmL.fill(0, 0, samples);
-        adpcmR.fill(0, 0, samples);
-
-        adpcmDriver.run(adpcmL, adpcmR, samples);
-        fmDriver.run(fmL, fmR, samples);
-
-        for (let i = 0; i < samples; i += 1) {
-          mixL[mixPos + i] = fmL[i] + adpcmL[i];
-          mixR[mixPos + i] = fmR[i] + adpcmR[i];
-        }
-
-        timerDriver.advance(samples);
-        samplesRemaining -= samples;
-        mixPos += samples;
+    let blocks = 0;
+    while (!session.finished) {
+      const p = session.renderFloatBlock(blockL, blockR);
+      if (p.producedSamples > 0) {
+        leftChunks.push(blockL.slice(0, p.producedSamples));
+        rightChunks.push(blockR.slice(0, p.producedSamples));
       }
 
-      for (let i = 0; i < this.blockSize; i += 1) {
-        bufL[i] = mixL[i];
-        bufR[i] = mixR[i];
-      }
+      blocks += 1;
 
-      leftChunks.push(Float32Array.from(bufL, (v) => Math.max(-1, Math.min(1, v / 32768))));
-      rightChunks.push(Float32Array.from(bufR, (v) => Math.max(-1, Math.min(1, v / 32768))));
-      totalSamples += this.blockSize;
-
-      if (options.onProgress && (leftChunks.length % 12) === 0) {
+      if (options.onProgress && (blocks % 12) === 0) {
         options.onProgress({
-          totalSamples,
-          seconds: totalSamples / this.sampleRate,
-          ended: !!mdxDriver.ended,
+          totalSamples: p.totalSamples,
+          seconds: p.seconds,
+          ended: p.ended,
         });
       }
 
       // Keep UI responsive on long renders.
-      if ((leftChunks.length % 24) === 0) {
+      if ((blocks % 24) === 0) {
         await new Promise((resolve) => setTimeout(resolve, 0));
+      }
+
+      if (p.finished && p.producedSamples === 0) {
+        break;
       }
     }
 
-    const outLeft = new Float32Array(totalSamples);
-    const outRight = new Float32Array(totalSamples);
+    const outLeft = new Float32Array(session.totalSamples);
+    const outRight = new Float32Array(session.totalSamples);
     let pos = 0;
     for (let i = 0; i < leftChunks.length; i += 1) {
       outLeft.set(leftChunks[i], pos);
@@ -132,32 +255,74 @@ export class BrowserMdxRenderer {
       sampleRate: this.sampleRate,
       left: outLeft,
       right: outRight,
-      durationSeconds: totalSamples / this.sampleRate,
-      mdx: mdxFile,
-      pdx: pdxFile,
-      truncated: !mdxDriver.ended,
+      durationSeconds: session.totalSamples / this.sampleRate,
+      truncated: session.truncated,
     };
   }
 
-  async renderFromUploadedFiles(mdxFile, fileIndex, options = {}) {
+  createStreamSession(mdxBytes, pdxBytes = null, options = {}) {
+    const mdxFile = this.parseMdx(mdxBytes);
+    const pdxFile = pdxBytes ? this.parsePdx(pdxBytes) : null;
+
+    return {
+      session: this._newSession(mdxFile, pdxFile, options),
+      mdx: mdxFile,
+      pdx: pdxFile,
+    };
+  }
+
+  async createStreamSessionFromUploadedFiles(mdxFile, fileIndex, options = {}) {
     const mdxBytes = new Uint8Array(await mdxFile.arrayBuffer());
-    const parsed = this.parseMdx(mdxBytes);
+    const parsedMdx = this.parseMdx(mdxBytes);
 
     let pdxBytes = null;
-    if (parsed.pdxFilename) {
-      const pdxFile = findPdxInFileIndex(mdxFile.name, parsed.pdxFilename, fileIndex);
+    if (parsedMdx.pdxFilename) {
+      const pdxFile = findPdxInFileIndex(mdxFile.name, parsedMdx.pdxFilename, fileIndex);
       if (pdxFile) {
         pdxBytes = new Uint8Array(await pdxFile.arrayBuffer());
       }
     }
 
-    const rendered = await this.render(mdxBytes, pdxBytes, options);
+    const parsedPdx = pdxBytes ? this.parsePdx(pdxBytes) : null;
     return {
-      ...rendered,
+      session: this._newSession(parsedMdx, parsedPdx, options),
+      mdx: parsedMdx,
+      pdx: parsedPdx,
       mdxFile,
       pdxResolved: pdxBytes !== null,
-      pdxName: parsed.pdxFilename,
+      pdxName: parsedMdx.pdxFilename,
     };
+  }
+
+  async render(mdxBytes, pdxBytes = null, options = {}) {
+    const { session, mdx, pdx } = this.createStreamSession(mdxBytes, pdxBytes, options);
+    try {
+      const rendered = await this._renderSession(session, options);
+      return {
+        ...rendered,
+        mdx,
+        pdx,
+      };
+    } finally {
+      session.dispose();
+    }
+  }
+
+  async renderFromUploadedFiles(mdxFile, fileIndex, options = {}) {
+    const prepared = await this.createStreamSessionFromUploadedFiles(mdxFile, fileIndex, options);
+    try {
+      const rendered = await this._renderSession(prepared.session, options);
+      return {
+        ...rendered,
+        mdx: prepared.mdx,
+        pdx: prepared.pdx,
+        mdxFile,
+        pdxResolved: prepared.pdxResolved,
+        pdxName: prepared.pdxName,
+      };
+    } finally {
+      prepared.session.dispose();
+    }
   }
 
   static pickMdxFiles(files) {

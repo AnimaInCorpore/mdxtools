@@ -15,4 +15,10 @@ export class TimerDriver {
       this.setOpmTempo(opmTimer);
     }
   }
+
+  deinit() {
+    this.dataPtr = null;
+    this.tick = null;
+    this.setOpmTempo = null;
+  }
 }

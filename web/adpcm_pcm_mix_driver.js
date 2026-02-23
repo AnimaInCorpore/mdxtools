@@ -6,6 +6,7 @@ import { SINCTBL3 } from "./sinctbl3.js";
 import { SINCTBL4 } from "./sinctbl4.js";
 import {
   speex_resampler_init,
+  speex_resampler_destroy,
   speex_resampler_estimate,
   speex_resampler_process_int,
   SPEEX_RESAMPLER_QUALITY_DEFAULT,
@@ -145,6 +146,7 @@ export class AdpcmPcmMixDriver {
   }
 
   estimate(bufSize) {
+    if (!this.outputResampler) return bufSize;
     const inLen = { value: 1 };
     const outLen = { value: bufSize };
     speex_resampler_estimate(this.outputResampler, 0, inLen, outLen);
@@ -152,6 +154,14 @@ export class AdpcmPcmMixDriver {
   }
 
   run(bufL, bufR, bufSize) {
+    if (!this.outputResampler) {
+      for (let i = 0; i < bufSize; i += 1) {
+        bufL[i] = 0;
+        bufR[i] = 0;
+      }
+      return 0;
+    }
+
     // Intermediate buffer size at 15625 Hz.
     // +1 ensures the output resampler always has enough input to produce bufSize samples.
     const interSize = Math.ceil(bufSize * 15625 / this.sampleRate) + 1;
@@ -256,5 +266,23 @@ export class AdpcmPcmMixDriver {
     for (let i = outLenR.value; i < bufSize; i += 1) bufR[i] = 0;
 
     return 0;
+  }
+
+  deinit() {
+    for (let i = 0; i < this.channels.length; i += 1) {
+      this.channels[i].stop();
+    }
+
+    if (this.outputResampler) {
+      speex_resampler_destroy(this.outputResampler);
+      this.outputResampler = null;
+    }
+
+    this.adpcmDriver.playImpl = null;
+    this.adpcmDriver.stopImpl = null;
+    this.adpcmDriver.setFreqImpl = null;
+    this.adpcmDriver.setVolumeImpl = null;
+    this.adpcmDriver.setPanImpl = null;
+    this.sampleCache = new WeakMap();
   }
 }

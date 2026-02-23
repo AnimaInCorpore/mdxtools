@@ -53,4 +53,13 @@ export class PcmTimerDriver {
     this.remainder = denom;
     return ticks;
   }
+
+  deinit() {
+    if (this.timerDriver && typeof this.timerDriver.deinit === "function") {
+      this.timerDriver.deinit();
+    }
+    this.numerator = 0;
+    this.denominator = 0;
+    this.remainder = 0;
+  }
 }

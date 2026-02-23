@@ -1,7 +1,8 @@
 import { BrowserMdxRenderer } from "./mdx_player.js";
 import { makeFileIndex, formatSeconds } from "./tools.js";
 
-const renderer = new BrowserMdxRenderer(44100, 2048);
+const DEFAULT_SAMPLE_RATE = 44100;
+const DEFAULT_BLOCK_SIZE = 2048;
 
 const els = {
   drop: document.getElementById("drop-zone"),
@@ -21,7 +22,8 @@ const state = {
   fileIndex: new Map(),
   mdxFiles: [],
   audioContext: null,
-  source: null,
+  renderer: null,
+  playback: null,
   playingName: null,
   renderToken: 0,
 };
@@ -30,24 +32,134 @@ function setStatus(msg) {
   els.status.textContent = msg;
 }
 
-function stopPlayback() {
-  if (state.source) {
-    try { state.source.stop(); } catch {}
-    state.source.disconnect();
-    state.source = null;
+function getRenderer(sampleRate) {
+  if (!state.renderer || state.renderer.sampleRate !== sampleRate) {
+    state.renderer = new BrowserMdxRenderer(sampleRate, DEFAULT_BLOCK_SIZE);
   }
+  return state.renderer;
+}
+
+function buildPdxInfo(pdxName, pdxResolved) {
+  if (!pdxName) return "No PDX";
+  return pdxResolved ? `PDX: ${pdxName}` : `PDX missing: ${pdxName}`;
+}
+
+function updateNowPlaying(playback, seconds) {
+  const elapsed = formatSeconds(seconds);
+  els.nowPlaying.textContent = `${playback.fileName} • ${elapsed} • ${playback.pdxInfo}`;
+}
+
+function schedulePlaybackUi(playback) {
+  if (playback.uiScheduled) return;
+  playback.uiScheduled = true;
+
+  requestAnimationFrame(() => {
+    playback.uiScheduled = false;
+    if (state.playback !== playback) return;
+
+    if (playback.pendingNowPlayingSeconds !== null) {
+      updateNowPlaying(playback, playback.pendingNowPlayingSeconds);
+      playback.pendingNowPlayingSeconds = null;
+    }
+    if (playback.pendingStatus !== null) {
+      setStatus(playback.pendingStatus);
+      playback.pendingStatus = null;
+    }
+  });
+}
+
+function stopPlayback() {
+  if (state.playback) {
+    const playback = state.playback;
+    state.playback = null;
+
+    try { playback.node.onaudioprocess = null; } catch {}
+    try { playback.node.disconnect(); } catch {}
+    try { playback.gain.disconnect(); } catch {}
+    try { playback.session.dispose(); } catch {}
+  }
+
   state.playingName = null;
   els.nowPlaying.textContent = "Nothing playing";
 }
 
 async function ensureAudioContext() {
   if (!state.audioContext) {
-    state.audioContext = new AudioContext({ sampleRate: 44100, latencyHint: "interactive" });
+    state.audioContext = new AudioContext({ sampleRate: DEFAULT_SAMPLE_RATE, latencyHint: "interactive" });
   }
   if (state.audioContext.state === "suspended") {
     await state.audioContext.resume();
   }
   return state.audioContext;
+}
+
+function startStreamPlayback(ctx, token, fileName, prepared, maxSeconds) {
+  // TODO: add AudioWorklet backend and keep ScriptProcessor as fallback.
+  if (typeof ctx.createScriptProcessor !== "function") {
+    throw new Error("Live streaming playback requires ScriptProcessorNode support.");
+  }
+
+  const blockSize = prepared.session.blockSize || DEFAULT_BLOCK_SIZE;
+  const node = ctx.createScriptProcessor(blockSize, 0, 2);
+  const gain = ctx.createGain();
+
+  const playback = {
+    token,
+    fileName,
+    pdxInfo: buildPdxInfo(prepared.pdxName, prepared.pdxResolved),
+    maxSeconds,
+    session: prepared.session,
+    node,
+    gain,
+    lastUiSeconds: -1,
+    finishQueued: false,
+    pendingNowPlayingSeconds: null,
+    pendingStatus: null,
+    uiScheduled: false,
+  };
+
+  node.onaudioprocess = (ev) => {
+    const outL = ev.outputBuffer.getChannelData(0);
+    const outR = ev.outputBuffer.getChannelData(1);
+
+    if (state.playback !== playback || token !== state.renderToken) {
+      outL.fill(0);
+      outR.fill(0);
+      return;
+    }
+
+    const p = playback.session.renderFloatBlock(outL, outR);
+
+    if (p.finished || p.seconds - playback.lastUiSeconds >= 0.5) {
+      playback.lastUiSeconds = p.seconds;
+      playback.pendingNowPlayingSeconds = p.seconds;
+      if (!p.finished) {
+        playback.pendingStatus = `Playing ${fileName}... ${formatSeconds(p.seconds)}`;
+      }
+      schedulePlaybackUi(playback);
+    }
+
+    if (p.finished && !playback.finishQueued) {
+      playback.finishQueued = true;
+      queueMicrotask(() => {
+        if (state.playback !== playback) return;
+        stopPlayback();
+        if (p.truncated) {
+          setStatus(`Stopped at max seconds (${formatSeconds(playback.maxSeconds)}).`);
+        } else {
+          setStatus(`Finished ${fileName}.`);
+        }
+      });
+    }
+  };
+
+  state.playback = playback;
+  state.playingName = fileName;
+  updateNowPlaying(playback, 0);
+
+  node.connect(gain);
+  gain.connect(ctx.destination);
+  setStatus(`Playing ${fileName}...`);
 }
 
 function renderTrackList() {
@@ -89,50 +201,33 @@ async function playTrack(file) {
   const token = ++state.renderToken;
   const loops = Number.parseInt(els.loops.value, 10);
   const maxSeconds = Number.parseInt(els.maxSeconds.value, 10);
+  const maxLoopsOpt = Number.isFinite(loops) ? Math.max(0, loops | 0) : 2;
+  const maxSecondsOpt = Number.isFinite(maxSeconds) && maxSeconds > 0 ? maxSeconds : 600;
 
-  setStatus(`Rendering ${file.name}...`);
+  stopPlayback();
+  setStatus(`Preparing ${file.name}...`);
 
   try {
-    const rendered = await renderer.renderFromUploadedFiles(file, state.fileIndex, {
-      maxLoops: Number.isFinite(loops) ? loops : 2,
-      maxSeconds: Number.isFinite(maxSeconds) ? maxSeconds : 600,
-      onProgress: (p) => {
-        if (token !== state.renderToken) return;
-        setStatus(`Rendering ${file.name}... ${formatSeconds(p.seconds)}`);
-      },
-    });
-
+    const ctx = await ensureAudioContext();
     if (token !== state.renderToken) return;
 
-    const ctx = await ensureAudioContext();
-    stopPlayback();
+    const renderer = getRenderer(ctx.sampleRate);
+    const prepared = await renderer.createStreamSessionFromUploadedFiles(file, state.fileIndex, {
+      maxLoops: maxLoopsOpt,
+      maxSeconds: maxSecondsOpt,
+    });
 
-    const buffer = ctx.createBuffer(2, rendered.left.length, rendered.sampleRate);
-    buffer.copyToChannel(rendered.left, 0);
-    buffer.copyToChannel(rendered.right, 1);
+    if (token !== state.renderToken) {
+      prepared.session.dispose();
+      return;
+    }
 
-    const source = ctx.createBufferSource();
-    source.buffer = buffer;
-    source.connect(ctx.destination);
-    source.onended = () => {
-      if (state.source === source) {
-        state.source = null;
-        state.playingName = null;
-        els.nowPlaying.textContent = "Nothing playing";
-      }
-    };
-    source.start();
-
-    state.source = source;
-    state.playingName = file.name;
-
-    const pdxInfo = rendered.pdxName
-      ? (rendered.pdxResolved ? `PDX: ${rendered.pdxName}` : `PDX missing: ${rendered.pdxName}`)
-      : "No PDX";
-    const truncInfo = rendered.truncated ? " (cut at max seconds)" : "";
-
-    els.nowPlaying.textContent = `${file.name} • ${formatSeconds(rendered.durationSeconds)} • ${pdxInfo}${truncInfo}`;
-    setStatus(`Ready. Playing ${file.name}.`);
+    try {
+      startStreamPlayback(ctx, token, file.name, prepared, maxSecondsOpt);
+    } catch (streamErr) {
+      prepared.session.dispose();
+      throw streamErr;
+    }
   } catch (err) {
     if (token !== state.renderToken) return;
     setStatus(`Error: ${err instanceof Error ? err.message : String(err)}`);
@@ -140,6 +235,7 @@ async function playTrack(file) {
 }
 
 function replaceFiles(files) {
+  state.renderToken += 1;
   state.files = files;
   state.fileIndex = makeFileIndex(files);
   state.mdxFiles = BrowserMdxRenderer.pickMdxFiles(files);
@@ -178,6 +274,7 @@ els.clearBtn.addEventListener("click", () => {
 });
 
 els.stopBtn.addEventListener("click", () => {
+  state.renderToken += 1;
   stopPlayback();
   setStatus("Stopped.");
 });

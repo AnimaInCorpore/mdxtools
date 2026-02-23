@@ -332,6 +332,25 @@
       text-align: right;
     }
 
+    .credits {
+      padding: 5px 16px 7px;
+      font-size: 11px;
+      color: var(--ink-muted);
+      opacity: 0.6;
+      text-align: right;
+    }
+
+    .credits a {
+      color: inherit;
+      text-decoration: underline;
+      text-decoration-style: dotted;
+      text-underline-offset: 2px;
+    }
+
+    .credits a:hover {
+      text-decoration-style: solid;
+    }
+
     @media (max-width: 560px) {
       .vr { display: none; }
       .settings { gap: 8px; }
@@ -378,6 +397,11 @@
       <div class="indicator"></div>
       <div id="now-playing">Nothing playing</div>
       <div id="status"></div>
+    </div>
+    <div class="credits">
+      <a href="https://github.com/AnimaInCorpore/mdxtools" target="_blank" rel="noopener">Web player</a> "AI assisted translation" by Sascha Springer
+      &nbsp;·&nbsp;
+      <a href="https://github.com/vampirefrog/mdxtools" target="_blank" rel="noopener">MDX engine</a> by vampirefrog
     </div>
   </main>
 
