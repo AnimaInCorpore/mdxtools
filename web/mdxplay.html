@@ -1,0 +1,301 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>MDXPlay Browser</title>
+  <style>
+    :root {
+      --bg0: #f4efe2;
+      --bg1: #dfcfab;
+      --bg2: #b38f6e;
+      --ink: #1a1209;
+      --ink-soft: #4c3c2c;
+      --card: rgba(255, 247, 232, 0.84);
+      --line: rgba(58, 37, 18, 0.28);
+      --accent: #bb3f00;
+      --accent-2: #104f43;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      font-family: "Bahnschrift", "Trebuchet MS", "Verdana", sans-serif;
+      color: var(--ink);
+      background:
+        radial-gradient(1200px 600px at -10% -10%, #f9e8bf 0%, transparent 60%),
+        radial-gradient(900px 700px at 100% 0%, #d8bb86 0%, transparent 62%),
+        linear-gradient(160deg, var(--bg0), var(--bg1) 40%, var(--bg2));
+      background-attachment: fixed;
+      display: grid;
+      place-items: center;
+      padding: 22px;
+    }
+
+    .app {
+      width: min(980px, 100%);
+      border: 1px solid var(--line);
+      border-radius: 22px;
+      padding: 22px;
+      background: var(--card);
+      backdrop-filter: blur(3px);
+      box-shadow: 0 18px 40px rgba(52, 29, 7, 0.23);
+      animation: rise 280ms ease-out;
+    }
+
+    @keyframes rise {
+      from { opacity: 0; transform: translateY(12px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    .header {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 12px;
+      align-items: center;
+      margin-bottom: 18px;
+    }
+
+    .title {
+      margin: 0;
+      font-size: clamp(28px, 4.6vw, 42px);
+      letter-spacing: 0.03em;
+      line-height: 1;
+      font-family: "Impact", "Arial Black", "Bahnschrift", sans-serif;
+      text-transform: uppercase;
+    }
+
+    .title small {
+      display: block;
+      margin-top: 6px;
+      font-size: 13px;
+      font-family: "Bahnschrift", "Trebuchet MS", sans-serif;
+      letter-spacing: 0.1em;
+      color: var(--ink-soft);
+      text-transform: none;
+    }
+
+    .controls {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 9px;
+      align-items: center;
+      justify-content: flex-end;
+    }
+
+    button,
+    input[type="number"] {
+      border: 1px solid var(--line);
+      background: #fff9ef;
+      color: var(--ink);
+      border-radius: 11px;
+      padding: 8px 12px;
+      font: inherit;
+    }
+
+    button {
+      cursor: pointer;
+      transition: transform 120ms ease, box-shadow 120ms ease;
+    }
+
+    button:hover {
+      transform: translateY(-1px);
+      box-shadow: 0 6px 14px rgba(0, 0, 0, 0.12);
+    }
+
+    .primary {
+      background: var(--accent);
+      color: #fff7ef;
+      border-color: rgba(0, 0, 0, 0.12);
+    }
+
+    .danger {
+      background: #641c00;
+      color: #fff7ef;
+      border-color: rgba(0, 0, 0, 0.16);
+    }
+
+    .panel-grid {
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 12px;
+    }
+
+    .drop-zone,
+    .panel {
+      border: 1px dashed var(--line);
+      border-radius: 16px;
+      background: rgba(255, 251, 241, 0.7);
+      padding: 14px;
+    }
+
+    .drop-zone {
+      text-align: center;
+      min-height: 92px;
+      display: grid;
+      place-items: center;
+      transition: border-color 150ms ease, background 150ms ease;
+    }
+
+    .drop-zone.dragging {
+      border-color: var(--accent-2);
+      background: rgba(214, 255, 243, 0.66);
+    }
+
+    .drop-zone strong {
+      display: block;
+      font-size: 18px;
+      letter-spacing: 0.02em;
+      margin-bottom: 5px;
+    }
+
+    .meta {
+      display: grid;
+      gap: 7px;
+      margin-top: 10px;
+    }
+
+    .status {
+      color: var(--ink-soft);
+      font-size: 14px;
+    }
+
+    .now-playing {
+      color: var(--accent-2);
+      font-size: 14px;
+      font-weight: 700;
+    }
+
+    .track-list {
+      list-style: none;
+      margin: 0;
+      padding: 0;
+      max-height: 340px;
+      overflow: auto;
+      display: grid;
+      gap: 8px;
+    }
+
+    .track,
+    .empty {
+      border: 1px solid rgba(70, 43, 21, 0.2);
+      border-radius: 12px;
+      background: rgba(255, 252, 246, 0.95);
+      padding: 9px 10px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+    }
+
+    .empty {
+      justify-content: center;
+      color: var(--ink-soft);
+      min-height: 74px;
+    }
+
+    .track-name {
+      font-size: 14px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      max-width: 100%;
+    }
+
+    .track-actions {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      flex-shrink: 0;
+    }
+
+    .settings {
+      display: inline-flex;
+      gap: 8px;
+      align-items: center;
+      flex-wrap: wrap;
+    }
+
+    .settings label {
+      font-size: 12px;
+      color: var(--ink-soft);
+      display: inline-flex;
+      gap: 6px;
+      align-items: center;
+    }
+
+    .settings input {
+      width: 84px;
+      padding: 6px 8px;
+    }
+
+    @media (max-width: 720px) {
+      .header {
+        grid-template-columns: 1fr;
+      }
+
+      .controls {
+        justify-content: flex-start;
+      }
+
+      .track {
+        align-items: stretch;
+      }
+
+      .track-actions {
+        align-items: center;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main class="app">
+    <div class="header">
+      <h1 class="title">
+        MDXPLAY.HTML
+        <small>Pure browser port of mdxplay.c dependency graph (no wasm / no emscripten)</small>
+      </h1>
+      <div class="controls">
+        <div class="settings">
+          <label>
+            Loops
+            <input id="loops" type="number" min="0" max="99" value="2">
+          </label>
+          <label>
+            Max sec
+            <input id="max-seconds" type="number" min="10" max="7200" value="600">
+          </label>
+        </div>
+        <button id="browse-btn" class="primary">Browse Files</button>
+        <button id="stop-btn" class="danger">Stop</button>
+        <button id="clear-btn">Clear</button>
+      </div>
+    </div>
+
+    <div class="panel-grid">
+      <section id="drop-zone" class="drop-zone" aria-label="Drop files here">
+        <div>
+          <strong>Drop MDX + PDX files here</strong>
+          <span>Multiple files are supported. You can also click “Browse Files”.</span>
+        </div>
+      </section>
+
+      <section class="panel">
+        <ul id="track-list" class="track-list"></ul>
+      </section>
+
+      <section class="meta">
+        <div id="status" class="status"></div>
+        <div id="now-playing" class="now-playing">Nothing playing</div>
+      </section>
+    </div>
+  </main>
+
+  <input id="file-picker" type="file" accept=".mdx,.pdx" multiple hidden>
+  <script type="module" src="./mdxplay_app.js"></script>
+</body>
+</html>
