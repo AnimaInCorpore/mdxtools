@@ -189,13 +189,18 @@ export class MdxDriver {
       }
     } else if (track.note < 96 && this.pdxFile) {
       const sample = this.pdxFile.samples[track.note];
-      this.adpcmDriver.play(
-        trackNum - 8,
-        sample.data,
-        sample.len,
-        track.adpcmFreqNum,
-        mdxAdpcmVolumeFromOpm(track.opmVolume + this.fadeValue)
-      );
+      if (sample && sample.data && sample.len > 0) {
+        this.adpcmDriver.play(
+          trackNum - 8,
+          sample.data,
+          sample.len,
+          track.adpcmFreqNum,
+          mdxAdpcmVolumeFromOpm(track.opmVolume + this.fadeValue)
+        );
+      } else {
+        // Missing/empty sample entry: keep behavior safe and silent.
+        this.adpcmDriver.stop(trackNum - 8);
+      }
     }
   }
 

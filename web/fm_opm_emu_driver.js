@@ -5,7 +5,7 @@ export class FmOpmEmuDriver {
   constructor(vgmLogger = null, sampleRate = 44100) {
     this.sampleRate = sampleRate;
     this.opm = new YM2151(4000000, sampleRate);
-    this.fmOpmDriver = new FmOpmDriver(vgmLogger);
+    this.fmOpmDriver = new FmOpmDriver(vgmLogger, { autoReset: false });
     this.fmDriver = this.fmOpmDriver.fmDriver;
 
     this.fmOpmDriver.writeImpl = (reg, val) => {

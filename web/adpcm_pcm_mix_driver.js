@@ -51,6 +51,12 @@ function decodeAdpcmData(data, len) {
   return out;
 }
 
+function clampAdpcmSample(v) {
+  if (v > 32767) return 32767;
+  if (v < -32767) return -32767;
+  return v | 0;
+}
+
 class MixChannel {
   constructor() {
     this.freqNum = 4;
@@ -103,6 +109,11 @@ export class AdpcmPcmMixDriver {
 
   play(channel, data, len, freqNum, volume) {
     const ch = this.channels[channel & 0x07];
+    if (!data || len <= 0) {
+      ch.stop();
+      return 0;
+    }
+
     let decoded = this.sampleCache.get(data);
     if (!decoded || decoded.__len !== len) {
       decoded = decodeAdpcmData(data, len);
@@ -112,7 +123,7 @@ export class AdpcmPcmMixDriver {
 
     ch.decoded = decoded;
     ch.srcPos = 0;
-    ch.freqNum = Math.max(0, Math.min(4, freqNum | 0));
+    ch.freqNum = freqNum & 0xff;
     ch.volume = adpcmMixerCalcVol(volume & 0xff);
     return 0;
   }
@@ -124,7 +135,7 @@ export class AdpcmPcmMixDriver {
 
   setFreq(channel, freqNum) {
     const ch = this.channels[channel & 0x07];
-    ch.freqNum = Math.max(0, Math.min(4, freqNum | 0));
+    ch.freqNum = freqNum & 0xff;
     return 0;
   }
 
@@ -168,7 +179,8 @@ export class AdpcmPcmMixDriver {
 
         for (let k = 0; k < srcNeeded; k += 1) {
           if (pos >= data.length) { ch.stop(); break; }
-          srcBuf[k] += (vol * data[pos++]) / 1024 | 0;
+          const sample = clampAdpcmSample((vol * data[pos++]) / 1024);
+          srcBuf[k] += sample;
         }
         if (ch.active()) ch.srcPos = pos;
       }
@@ -203,7 +215,7 @@ export class AdpcmPcmMixDriver {
 
       for (let k = 0; k < interSize; k += 1) {
         if (pos >= data.length) { ch.stop(); break; }
-        const sample = (vol * data[pos++]) / 1024 | 0;
+        const sample = clampAdpcmSample((vol * data[pos++]) / 1024);
         if (pan & 0x01) mixL[k] += sample;
         if (pan & 0x02) mixR[k] += sample;
       }

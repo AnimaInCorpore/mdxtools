@@ -6,7 +6,8 @@ function mdxNoteToOpm(note) {
 }
 
 export class FmOpmDriver {
-  constructor(vgmLogger = null) {
+  constructor(vgmLogger = null, options = {}) {
+    const { autoReset = true } = options;
     this.fmDriver = new FmDriver();
     this.vgmLogger = vgmLogger;
     this.opmCache = new Uint8Array(256);
@@ -84,7 +85,9 @@ export class FmOpmDriver {
       if (amd) this.write(0x19, amd);
     };
 
-    this.resetRegisters();
+    if (autoReset) {
+      this.resetRegisters();
+    }
   }
 
   resetRegisters() {
